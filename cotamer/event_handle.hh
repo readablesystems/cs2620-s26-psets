@@ -18,8 +18,8 @@ struct fd_body;
 struct quorum_event_body;
 template <typename T> struct task_promise;
 template <typename T> struct task_awaiter;
-template <typename T> struct task_event_awaiter;
-template <typename T, bool shared> struct task_mutex_event_awaiter;
+struct task_event_awaiter;
+template <bool shared> struct task_mutex_event_awaiter;
 struct task_resolution_awaiter;
 struct task_final_awaiter;
 struct interest_event_awaiter;
@@ -112,4 +112,34 @@ private:
 struct fd_batch;
 
 }
+
+
+// Type helpers.
+template <typename T> struct task_value_type { using type = void; };
+template <typename T> struct task_value_type<task<T>> { using type = T; };
+
+template <typename T> struct task_alternative_type {
+    using value_type = typename task_value_type<T>::type;
+    using type = std::conditional_t<std::is_void_v<value_type>, std::monostate, value_type>;
+};
+
+template <typename T> struct task_attempt_type {
+    using type = typename task_alternative_type<T>::type;
+};
+template <typename T> struct task_attempt_type<task<std::optional<T>>> {
+    using type = T;
+};
+
+template <typename... Ts> struct common_task_value_type
+    : std::common_type<typename task_value_type<Ts>::type...> { };
+
+template <typename T> using task_value_type_t =
+    typename task_value_type<std::remove_cvref_t<T>>::type;
+template <typename T> using task_alternative_type_t =
+    typename task_alternative_type<std::remove_cvref_t<T>>::type;
+template <typename T> using task_attempt_type_t =
+    typename task_attempt_type<std::remove_cvref_t<T>>::type;
+template <typename... Ts> using common_task_value_type_t =
+    typename common_task_value_type<std::remove_cvref_t<Ts>...>::type;
+
 }

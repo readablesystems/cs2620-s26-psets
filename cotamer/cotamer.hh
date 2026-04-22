@@ -107,6 +107,9 @@ public:
 
     detail::task_awaiter<T> operator co_await() const noexcept;
 
+    inline const promise_type* promise_ptr() const noexcept;
+    inline promise_type* promise_ptr() noexcept;
+
 private:
     friend struct detail::task_promise<T>;
     friend task<T> forward<>(task<T>);
@@ -134,27 +137,18 @@ template <typename... Es> inline event all(Es&&... es);
 // result (wrapped in optional) if the task completes first, or nullopt if
 // one of the events triggers first.
 template <typename T, typename... Es>
-[[nodiscard]] task<std::optional<T>> attempt(task<T> t, Es... es);
-template <typename T, typename... Es>
-[[nodiscard]] task<std::optional<T>> attempt(task<std::optional<T>> t, Es... es);
-template <typename... Es>
-[[nodiscard]] task<std::optional<std::monostate>> attempt(task<void> t, Es... es);
+[[nodiscard]] task<std::optional<task_attempt_type_t<T>>> attempt(T&& t, Es&&... es);
 
 // first(task...) - run several tasks and return the result of the first one
 // that completes (wrapped in variant).
-template <typename T> struct task_return_type {};
-template <typename T> struct task_return_type<task<T>> { using type = T; };
-template <> struct task_return_type<task<void>> { using type = std::monostate; };
-template <> struct task_return_type<event> { using type = std::monostate; };
-template <typename T> using task_return_type_t = typename task_return_type<T>::type;
 
 template <typename... Ts>
-[[nodiscard]] task<std::variant<task_return_type_t<Ts>...>> first(Ts... ts);
+[[nodiscard]] task<std::variant<task_alternative_type_t<Ts>...>> first(Ts&&... ts);
 
 // race(task...) - run several tasks, all of the same type, and return the result
 // of the first one that completes (unwrapped).
-template <typename T, typename... Ts>
-[[nodiscard]] task<T> race(task<T>, Ts... rest);
+template <typename... Ts>
+[[nodiscard]] task<common_task_value_type_t<Ts...>> race(Ts&&... rest);
 template <typename T>
 [[nodiscard]] task<T> race();
 
@@ -361,6 +355,7 @@ inline task<size_t> read_once(const fd& f, void* buf, size_t count);
 inline task<size_t> write_once(const fd& f, const void* buf, size_t count);
 inline task<size_t> read(const fd& f, void* buf, size_t count);
 inline task<size_t> write(const fd& f, const void* buf, size_t count);
+task<size_t> writev(const fd& f, const struct iovec* iov, size_t iovcnt);
 
 inline task<> connect(const fd& f, const struct sockaddr* addr, socklen_t len);
 inline task<fd> accept(const fd& listen_fd);

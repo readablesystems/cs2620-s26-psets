@@ -1,7 +1,9 @@
 #include "cotamer/io.hh"
-#include <sstream>
+#include <ranges>
 #include <thread>
 #include <netdb.h>
+#include <unistd.h>
+#include <sys/uio.h>
 
 namespace cotamer {
 
@@ -486,6 +488,47 @@ task<cotamer::fd> tcp_connect(std::string address) {
         }
     }
     std::rethrow_exception(last_err);
+}
+
+
+// Writes all bytes in the `iovec`s, suspending as needed. Returns bytes
+// written.
+task<size_t> writev(const fd& f, const struct iovec* iov, size_t iovcnt) {
+    size_t nw = 0;
+    std::vector<struct iovec> iovcopy;
+    do {
+        ssize_t r = ::writev(f.fileno(), iov, iovcnt);
+        if (r > 0) {
+            nw += r;
+            while (r > 0) {
+                if (size_t(r) >= iov->iov_len) {
+                    r -= iov->iov_len;
+                    ++iov;
+                    --iovcnt;
+                    continue;
+                }
+                if (iovcopy.empty()) {
+                    iovcopy.append_range(std::span(iov, iovcnt));
+                    iov = iovcopy.data();
+                }
+                struct iovec* xiov = const_cast<struct iovec*>(iov);
+                xiov->iov_base = reinterpret_cast<char*>(iov->iov_base) + r;
+                xiov->iov_len -= r;
+                r = 0;
+            }
+        } else if (r == 0) {
+            // This result is only expected if the original `count` was 0.
+            // At other times, treat it like EOF on read.
+            break;
+        } else if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+            co_await writable(f);
+        } else if (nw > 0) {
+            break;
+        } else {
+            throw errno_error();
+        }
+    } while (iovcnt != 0);
+    co_return nw;
 }
 
 }
