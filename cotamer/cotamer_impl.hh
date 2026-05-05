@@ -33,8 +33,9 @@ constexpr uint32_t ef_want_interest = 32; // transitive quorum member has intere
 constexpr uint32_t ef_user = 64;          // first user flag
 constexpr uint32_t ef_nuser = 4;          // number of user flags
 constexpr uint32_t efm_user = 0x3C0;      // mask of user flags
+constexpr uint32_t efs_user = 6;          // shift to first user flag
 constexpr uint32_t ef_interest = 1024;    // this quorum has 1 interest{}
-                                          // (added once per interest{})
+                                          // (added once per interest{}; must be largest flag)
 
 // exception thrown during driver::clearing()
 struct clearing_exception {};
@@ -99,23 +100,35 @@ struct fd_body {
                 break;
             }
         }
-        bool del = drivers_.empty()
-            && ref_.load(std::memory_order_acquire) == 0;
+        if (!drivers_.empty()) {
+            unlock();
+            return;
+        }
+        // The fd_body should be deleted when unreferenced.
+        bool deletable = ref_.load(std::memory_order_acquire) == 0;
+        // The OS fd should be closed if close was explicitly requested
+        // (fd_ < 0) and the fd_body isn't registered on any driver
+        // (drivers_.empty() -- this branch).
+        int closable = fd_.load(std::memory_order_relaxed) < 0 ? base_fd_ : -1;
+        if (closable >= 0) {
+            base_fd_ = -1;
+        }
         unlock();
-        if (del) {
+        if (closable >= 0) {
+            ::close(closable);
+        }
+        if (deletable) {
             delete this;
         }
     }
 
     inline void deref() noexcept {
         if (ref_.load(std::memory_order_acquire) == 1) {
-            deref_close(true);
+            close(true);
         } else {
             ref_.fetch_sub(1, std::memory_order_release);
         }
     }
-
-    void deref_close(bool deref);         // non-inline, in cotamer.cc
 
     inline void lock() {
         while (lock_.test_and_set(std::memory_order_acquire)) {
@@ -126,6 +139,8 @@ struct fd_body {
     inline void unlock() {
         lock_.clear(std::memory_order_release);
     }
+
+    void close(bool because_deref);         // non-inline, in io.cc
 };
 
 
@@ -1115,6 +1130,15 @@ inline bool event::idle() const noexcept {
     return ep_.idle();
 }
 
+inline int event::user_flags() const noexcept {
+    return ep_ ? (ep_->relaxed_flags() & detail::efm_user) >> detail::efs_user : 0;
+}
+
+inline void event::set_user_flags(int flags) {
+    assert(ep_);
+    ep_->set_user_flags(flags << detail::efs_user);
+}
+
 inline bool event::trigger() {
     return ep_ && ep_->trigger();
 }
@@ -1374,8 +1398,8 @@ inline void driver::after(const std::chrono::duration<Rep, Period>& d, event e) 
     at(steady_now() + std::chrono::duration_cast<duration>(d), std::move(e));
 }
 
-inline event driver::file_event(const cotamer::fd& f, fdevent type) {
-    return fds_.watch(f.fileno(), int(type), f.body(), this);
+inline event driver::file_event(const cotamer::fd& f, fdevent mask) {
+    return fds_.watch(f.fileno(), mask, f.body(), this);
 }
 
 inline void driver::loop() {
@@ -1461,6 +1485,10 @@ inline event after(duration d) {
 template <typename Rep, typename Period>
 inline event after(const std::chrono::duration<Rep, Period>& d) {
     return driver::current->after(d);
+}
+
+inline event file_event(const fd& f, fdevent mask) {
+    return driver::current->file_event(f, mask);
 }
 
 inline event readable(const fd& f) {
@@ -1833,96 +1861,96 @@ inline size_t driver::timer_size() const noexcept {
     return timed_.size();
 }
 
+inline unsigned driver::nfdctl() const noexcept {
+    return nfdctl_;
+}
+
+inline const detail::fd_event_set& driver::fds() const noexcept {
+    return fds_;
+}
+
 
 // file descriptor functions
 
 namespace detail {
 
-inline event_handle fd_event_set::watch(int fd, int interest, fd_body* body,
-                                        driver* drv) {
-    if (fd < 0) {
-        return event_handle();
-    }
+inline unsigned fd_event_set::take_watch_list(int fd, fdevent imask, unsigned epoch) {
     unsigned ufd = fd;
-    if (ufd >= capacity_) {
-        hard_ensure(ufd);
+    if (ufd >= fdr_capacity_) {
+        return 0U;
     }
     fdrec& fdi = fdrs_[ufd];
-    if (fdi.body != body) {
-        if (fdi.body) {
-            for (int ix = 0; ix != 3; ++ix) {
-                if (fdi.ev[ix]) {
-                    fdi.ev[ix]->trigger();
-                    fdi.ev[ix] = nullptr;
-                }
-            }
-            fdi.body->remove_listener(drv);
+    if (!fdi.whead || (epoch && epoch != fdi.epoch)) {
+        return 0U;
+    }
+    // Walk `watchrec` chain in order. Watches intersecting with `imask` are
+    // detached, appended to `whead`, and eventually returned; others are
+    // preserved.
+    unsigned whead = 0U;
+    unsigned* wpprev = &whead;
+    unsigned wix = fdi.whead;
+    unsigned* fdpprev = &fdi.whead;
+    fdi.wtail = 0U;
+    while (wix) {
+        auto& wr = ws_[wix - 1];
+        unsigned next = wr.wlink;
+        if ((imask & wr.mask) != fdevent::none || wr.ev->empty()) {
+            *wpprev = wix;
+            wpprev = &wr.wlink;
+        } else {
+            *fdpprev = fdi.wtail = wix;
+            fdpprev = &wr.wlink;
         }
-        fdi.body = body;
-        body->add_listener(drv);
+        wix = next;
     }
-    if (!fdi.ev[interest]) {
-        if (fdi.update_link_ == update_clean) {
-            fdi.update_link_ = update_link_;
-            update_link_ = ufd + 1;
-        }
-        fdi.ev[interest] = event_handle{new event_body};
-    }
-    return fdi.ev[interest];
-}
-
-inline event_handle fd_event_set::take(int fd, int interest, unsigned epoch) {
-    unsigned ufd = fd;
-    if (ufd >= capacity_) {
-        return event_handle();
-    }
-    fdrec& fdi = fdrs_[ufd];
-    if (!fdi.ev[interest]
-        || fdi.ev[interest]->empty()
-        || (epoch && epoch != fdi.epoch)) {
-        return event_handle();
-    }
-    if (fdi.update_link_ == update_clean) {
-        fdi.update_link_ = update_link_;
+    *wpprev = *fdpprev = 0U;   // null-terminate both chains
+    // If we changed the watchrec chain, queue to update kernel notifier
+    if (whead && fdi.update_link == link_clean) {
+        fdi.update_link = update_link_;
         update_link_ = ufd + 1;
     }
-    return std::exchange(fdi.ev[interest], nullptr);
+    return whead;
 }
 
-inline std::optional<std::pair<fd_body*, unsigned>> fd_event_set::check_fd_close(int fd) {
-    unsigned ufd = fd;
-    if (ufd >= capacity_) {
-        return std::nullopt;
+inline event_handle fd_event_set::pop_watch_list_event(unsigned& wix, fdevent mask) {
+    unsigned in_wix = wix;
+    watchrec& wr = ws_[wix - 1];
+    wix = wr.wlink;
+    wr.wlink = free_wlink_;
+    free_wlink_ = in_wix;
+    if (wr.ev && mask != fdevent::none) {
+        wr.ev->set_user_flags(int(mask) << efs_user);
     }
-    fdrec& fdi = fdrs_[ufd];
-    if (!fdi.body || fdi.body->fileno() >= 0) {
-        return std::nullopt;
-    }
-    for (int ix = 0; ix != 3; ++ix) {
-        if (fdi.ev[ix]) {
-            fdi.ev[ix]->trigger();
-            fdi.ev[ix] = nullptr;
-        }
-    }
-    ++fdi.epoch;
-    return {{std::exchange(fdi.body, nullptr), fdi.epoch - 1}};
+    return std::exchange(wr.ev, nullptr);
 }
 
 inline bool fd_event_set::has_update() const noexcept {
-    return update_link_ != update_sentinel;
+    return update_link_ != link_sentinel;
+}
+
+inline fdevent fd_event_set::watch_list_mask(unsigned wix) const {
+    fdevent mask = fdevent::none;
+    while (wix) {
+        auto& wr = ws_[wix - 1];
+        if (!wr.ev.empty()) {
+            mask = mask | wr.mask;
+        }
+        wix = wr.wlink;
+    }
+    return mask;
 }
 
 inline std::optional<fd_update> fd_event_set::pop_update() noexcept {
-    if (update_link_ == update_sentinel) {
+    if (update_link_ == link_sentinel) {
         return std::nullopt;
     }
     unsigned ufd = update_link_ - 1;
     fdrec& fdi = fdrs_[ufd];
-    update_link_ = fdi.update_link_;
-    fdi.update_link_ = update_clean;
-    auto mask = fdi.mask();
+    update_link_ = fdi.update_link;
+    fdi.update_link = link_clean;
+    auto mask = watch_list_mask(fdi.whead);
     unsigned epoch = fdi.epoch;
-    if (!mask) {
+    if (mask == fdevent::none) {
         ++fdi.epoch;
     } else if (epoch < user_epoch) { // epoch 1 is reserved for internal FDs
         fdi.epoch = epoch = user_epoch;
@@ -1930,21 +1958,37 @@ inline std::optional<fd_update> fd_event_set::pop_update() noexcept {
     return {{int(ufd), mask, epoch}};
 }
 
-inline std::optional<fd_update> fd_event_set::next_nonempty(int fd) const noexcept {
+inline std::optional<fd_update> fd_event_set::next_known(int fd) const noexcept {
     unsigned ufd = fd + 1;
-    if (ufd >= capacity_) {
+    if (ufd >= fdr_capacity_) {
         return std::nullopt;
     }
     const fdrec* fdrp = fdrs_ + ufd;
     while (true) {
-        if (int mask = fdrp->mask()) {
-            return {{int(ufd), mask, fdrp->epoch}};
+        if (fdrp->known()) {
+            return {{int(ufd), watch_list_mask(fdrp->whead), fdrp->epoch}};
         }
-        if (++ufd == capacity_) {
+        if (++ufd == fdr_capacity_) {
             return std::nullopt;
         }
         ++fdrp;
     }
+}
+
+inline size_t fd_event_set::active_watch_count() const noexcept {
+    size_t n = ws_.size();
+    for (unsigned wix = free_wlink_; wix; wix = ws_[wix - 1].wlink) {
+        --n;
+    }
+    return n;
+}
+
+inline fdevent fd_event_set::fd_mask(int fd) const noexcept {
+    unsigned ufd = fd;
+    if (ufd >= fdr_capacity_) {
+        return fdevent::none;
+    }
+    return watch_list_mask(fdrs_[ufd].whead);
 }
 
 }
@@ -2010,7 +2054,7 @@ inline fd::operator bool() const noexcept {
 
 inline void fd::close() {
     if (body_) {
-        body_->deref_close(false);
+        body_->close(false);
     }
 }
 

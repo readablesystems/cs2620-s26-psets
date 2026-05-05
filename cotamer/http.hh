@@ -1,10 +1,15 @@
 #pragma once
+#include "cotamer/config.hh"
 #include "cotamer/io.hh"
 #include "llhttp.h"
 #include <vector>
 #include <string>
 #include <memory>
+#include <cstring>
 #include <ctime>
+#if COTAMER_HAVE_NLOHMANN_JSON
+# include <nlohmann/json_fwd.hpp>
+#endif
 namespace cotamer {
 class http_parser;
 
@@ -116,51 +121,60 @@ private:
 };
 
 class http_message {
-  public:
+public:
     typedef http_header_iterator header_iterator;
 
-    inline http_message();
+    inline http_message(llhttp_method method = HTTP_GET,
+                        std::string url = std::string());
+    http_message(http_message&&) = default;
+    http_message& operator=(http_message&&) = default;
+    inline http_message(const http_message&);
+    inline http_message& operator=(const http_message&);
 
-    inline bool ok() const;
-    explicit inline operator bool() const;
-    inline bool operator!() const;
-    inline llhttp_errno error() const;
+    inline constexpr bool ok() const;
+    explicit inline constexpr operator bool() const;
+    inline constexpr bool operator!() const;
+    inline constexpr llhttp_errno error() const;
+    inline const char* error_name() const;
 
-    inline unsigned http_major() const;
-    inline unsigned http_minor() const;
-
-    inline unsigned status_code() const;
+    inline constexpr unsigned http_major() const;
+    inline constexpr unsigned http_minor() const;
+    inline constexpr unsigned status_code() const;
     inline const std::string& status_message() const;
-    inline llhttp_method method() const;
-    inline const std::string& url() const;
+    inline constexpr llhttp_method method() const;
+    inline const char* method_name() const;
 
+    // Examine headers
     inline bool has_header(const char* name) const;
-    inline bool has_header(const char* name, size_t length) const;
+    inline bool has_header(const char* name, size_t name_length) const;
     inline bool has_header(std::string_view name) const;
     inline header_iterator find_header(const char* name) const;
-    header_iterator find_header(const char* name, size_t length) const;
+    header_iterator find_header(const char* name, size_t name_length) const;
     inline header_iterator find_header(std::string_view name) const;
     inline std::string header(const char* name) const;
-    std::string header(const char* name, size_t length) const;
+    std::string header(const char* name, size_t name_length) const;
     inline std::string header(std::string_view name) const;
-
-    inline const std::string& body() const;
-
-    inline bool has_valid_url() const;
-    inline bool has_path() const;
-    inline std::string_view path() const;
-    inline bool has_search() const;
-    inline std::string_view search() const;
-    inline bool has_hash() const;
-    inline std::string_view hash() const;
-    bool has_search_param(std::string_view name) const;
-    std::string_view search_param(std::string_view name) const;
-
     inline header_iterator header_begin() const;
     inline header_iterator header_end() const;
+
+    // Examine URL and URL parts
+    inline constexpr const std::string& url() const;   // `/path?a=b&c=d#hash`
+    inline bool has_valid_url() const;
+    inline bool has_path() const;
+    inline bool has_search() const;
+    inline bool has_hash() const;
+    inline std::string_view path() const;      // → `/path`
+    inline std::string_view search() const;    // → `?a=b&c=d`
+    inline std::string_view hash() const;      // → `#hash`
+    bool has_search_param(std::string_view name) const;
+    std::string_view search_param(std::string_view name) const;
     inline header_iterator search_param_begin() const;
     inline header_iterator search_param_end() const;
 
+    // Examine body
+    inline const std::string& body() const;
+
+    // Modify message
     inline http_message& clear();
     void add_header(std::string key, std::string value);
     inline void add_header(std::string key, size_t value);
@@ -175,8 +189,12 @@ class http_message {
     inline http_message& header(std::string key, std::string value);
     inline http_message& header(std::string key, size_t value);
     inline http_message& date_header(std::string key, time_t value);
+
     inline http_message& body(std::string body);
     inline http_message& append_body(const std::string& x);
+#if COTAMER_HAVE_NLOHMANN_JSON
+    http_message& body(const nlohmann::json& j);
+#endif
 
     static const char* default_status_message(unsigned code);
 
@@ -195,12 +213,13 @@ private:
         }
     };
 
-    unsigned short major_;
-    unsigned short minor_;
-    unsigned status_code_ : 16;
-    unsigned method_ : 8;
-    unsigned error_ : 7;
+    unsigned char major_;
+    unsigned char minor_;
+    unsigned char method_;
+    unsigned char error_;
+    unsigned short status_code_;
     unsigned upgrade_ : 1;
+    unsigned has_body_ : 1;
 
     std::string url_;
     std::string status_message_;
@@ -220,27 +239,51 @@ private:
 
 class http_parser {
 public:
-    http_parser(fd f, enum llhttp_type type);
+    enum parser_type { client, server };
+    http_parser(fd f, parser_type direction = server,
+                std::string host = std::string());
+    http_parser(fd f, enum llhttp_type receive_type);
+
+    inline bool ok() const;
+    inline constexpr llhttp_errno error() const;
+    inline const char* error_name() const;
 
     void clear();
-    inline bool ok() const;
-    inline enum llhttp_errno error() const;
-    inline bool should_keep_alive() const;
 
-    task<http_message> receive();
+    inline const std::string& host() const;
+    inline http_parser& set_host(const std::string& host);
+    inline http_parser& clear_host();
+
+    inline task<http_message> receive();
+    using ticket_type = mutex_event<false>;
+    task<http_message> receive(ticket_type);
+
     task<> send(http_message);
-    task<> send_request(http_message);
+    task<ticket_type> send_request(http_message);
     task<> send_response(http_message);
     task<> send_response_chunk(std::string);
     task<> send_response_end_chunk();
 
+    inline bool should_keep_alive() const;
     inline void clear_should_keep_alive();
+
+    // Data buffered after parsing the HTTP message
+    inline const std::string& receive_buffer() const;
+    inline std::string& receive_buffer();
+
+    // Underlying fd
+    inline const fd& file() const;
+    // Release ownership of the underlying fd (e.g., for protocol upgrades)
+    inline fd take_file();
 
 private:
     static constexpr size_t bufsize = 8192;
 
     ::llhttp_t hp_;
     fd f_;
+    mutex m_[2];
+    std::string receive_buffer_;
+    std::string host_;
 
     enum { state_unknown, state_header_name, state_header_value, state_done };
 
@@ -269,9 +312,37 @@ private:
     inline void copy_parser_status(message_data& md);
 };
 
-inline http_message::http_message()
-    : major_(1), minor_(1), status_code_(200), method_(HTTP_GET),
-      error_(HPE_OK), upgrade_(0) {
+inline http_message::http_message(llhttp_method method, std::string url)
+    : major_(1), minor_(1), method_(method), error_(HPE_OK),
+      status_code_(200), upgrade_(0), has_body_(0), url_(std::move(url)) {
+}
+
+inline http_message::http_message(const http_message& x)
+    : major_(x.major_), minor_(x.minor_), method_(x.method_), error_(x.error_),
+      status_code_(x.status_code_), upgrade_(x.upgrade_), has_body_(x.has_body_),
+      url_(x.url_), status_message_(x.status_message_), headers_(x.headers_),
+      body_(x.body_) {
+}
+
+inline http_message& http_message::operator=(const http_message& x) {
+    if (&x != this) {
+        major_ = x.major_;
+        minor_ = x.minor_;
+        method_ = x.method_;
+        error_ = x.error_;
+        status_code_ = x.status_code_;
+        upgrade_ = x.upgrade_;
+        has_body_ = x.has_body_;
+        url_ = x.url_;
+        status_message_ = x.status_message_;
+        headers_ = x.headers_;
+        hpairs_ = x.hpairs_;
+        body_ = x.body_;
+        if (info_) {
+            info_->flags = 0;
+        }
+    }
+    return *this;
 }
 
 inline void http_message::kill_info(unsigned fl) const {
@@ -280,31 +351,35 @@ inline void http_message::kill_info(unsigned fl) const {
     }
 }
 
-inline unsigned http_message::http_major() const {
+inline constexpr unsigned http_message::http_major() const {
     return major_;
 }
 
-inline unsigned http_message::http_minor() const {
+inline constexpr unsigned http_message::http_minor() const {
     return minor_;
 }
 
-inline bool http_message::ok() const {
+inline constexpr bool http_message::ok() const {
     return error_ == HPE_OK;
 }
 
-inline http_message::operator bool() const {
+inline constexpr http_message::operator bool() const {
     return ok();
 }
 
-inline bool http_message::operator!() const {
+inline constexpr bool http_message::operator!() const {
     return !ok();
 }
 
-inline llhttp_errno http_message::error() const {
+inline constexpr llhttp_errno http_message::error() const {
     return (llhttp_errno) error_;
 }
 
-inline unsigned http_message::status_code() const {
+inline const char* http_message::error_name() const {
+    return llhttp_errno_name((llhttp_errno) error_);
+}
+
+inline constexpr unsigned http_message::status_code() const {
     return status_code_;
 }
 
@@ -312,11 +387,15 @@ inline const std::string& http_message::status_message() const {
     return status_message_;
 }
 
-inline llhttp_method http_message::method() const {
+inline constexpr llhttp_method http_message::method() const {
     return (llhttp_method) method_;
 }
 
-inline const std::string& http_message::url() const {
+inline const char* http_message::method_name() const {
+    return llhttp_method_name((llhttp_method) method_);
+}
+
+inline constexpr const std::string& http_message::url() const {
     return url_;
 }
 
@@ -457,11 +536,13 @@ inline http_message& http_message::date_header(std::string key, time_t value) {
 
 inline http_message& http_message::body(std::string body) {
     body_ = std::move(body);
+    has_body_ = 1;
     return *this;
 }
 
 inline http_message& http_message::append_body(const std::string& x) {
     body_ += x;
+    has_body_ = 1;
     return *this;
 }
 
@@ -494,16 +575,54 @@ inline bool http_parser::ok() const {
     return hp_.error == (unsigned) HPE_OK;
 }
 
-inline llhttp_errno http_parser::error() const {
+inline constexpr llhttp_errno http_parser::error() const {
     return (llhttp_errno) hp_.error;
+}
+
+inline const char* http_parser::error_name() const {
+    return llhttp_errno_name((llhttp_errno) hp_.error);
+}
+
+inline const std::string& http_parser::host() const {
+    return host_;
+}
+
+inline http_parser& http_parser::set_host(const std::string& host) {
+    host_ = host;
+    return *this;
+}
+
+inline http_parser& http_parser::clear_host() {
+    host_.clear();
+    return *this;
 }
 
 inline bool http_parser::should_keep_alive() const {
     return llhttp_should_keep_alive(&hp_);
 }
 
+inline task<http_message> http_parser::receive() {
+    return receive(m_[0].lock());
+}
+
 inline void http_parser::clear_should_keep_alive() {
     hp_.flags = (hp_.flags & ~F_CONNECTION_KEEP_ALIVE) | F_CONNECTION_CLOSE;
+}
+
+inline const fd& http_parser::file() const {
+    return f_;
+}
+
+inline fd http_parser::take_file() {
+    return std::move(f_);
+}
+
+inline const std::string& http_parser::receive_buffer() const {
+    return receive_buffer_;
+}
+
+inline std::string& http_parser::receive_buffer() {
+    return receive_buffer_;
 }
 
 } // namespace cotamer

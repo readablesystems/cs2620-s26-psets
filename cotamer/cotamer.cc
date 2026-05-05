@@ -96,14 +96,19 @@ bool driver::loop(looptype lt) {
             }
         }
 
-        // register changes in interested file descriptor set
-        while (auto fdu = fds_.pop_update()) {
-            apply_fd_update(fdb, *fdu);
-        }
-
         // remove dead keepalives
         while (!keepalives_.empty() && keepalives_.back()->triggered()) {
             keepalives_.pop_back();
+        }
+
+        // if clearing, empty fds, keepalives, and timeouts
+        if (clearing_) {
+            process_clearing();
+        }
+
+        // register changes in interested file descriptor set
+        while (auto fdu = fds_.pop_update()) {
+            apply_fd_update(fdb, *fdu);
         }
 
         // exit if nothing to do
@@ -115,11 +120,6 @@ bool driver::loop(looptype lt) {
             && keepalives_.empty()) {
             clearing_ = false;
             return false;
-        }
-
-        // if clearing, empty fds, keepalives, and timeouts
-        if (clearing_) {
-            process_clearing();
         }
 
         // compute timeout
@@ -198,13 +198,13 @@ void driver::process_clearing() {
 
     // trigger all fd events (but coroutines throw rather than running)
     int fd = -1;
-    while (auto fdu = fds_.next_nonempty(fd)) {
+    while (auto fdu = fds_.next_known(fd)) {
         fd = fdu->fd;
-        for (int interest = 0; interest < 3; ++interest) {
-            if (auto eh = fds_.take(fd, interest, 0)) {
-                while (auto coh = eh->driver_trigger(this)) {
-                    coh();
-                }
+        auto wix = fds_.take_watch_list(fd, fdevent::all, 0);
+        while (wix) {
+            auto eh = fds_.pop_watch_list_event(wix);
+            while (auto coh = eh->driver_trigger(this)) {
+                coh();
             }
         }
     }

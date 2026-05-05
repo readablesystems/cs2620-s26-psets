@@ -90,6 +90,13 @@ RUN apt-get -y install\
  libgrpc++-dev\
  protobuf-compiler-grpc
 
+RUN apt-get -y install\
+ libcurl4-openssl-dev\
+ libllhttp-dev\
+ libmbedtls-dev\
+ libwslay-dev\
+ nlohmann-json3-dev
+
 # set up default locale
 RUN locale-gen en_US.UTF-8
 ENV LANG=en_US.UTF-8
@@ -104,7 +111,7 @@ RUN useradd -m -s /bin/bash -u "${UID}" cs61-user &&\
  echo "cs61-user ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/cs61-init
 
 # create binary reporting version of dockerfile
-RUN (echo '#\!/bin/sh'; echo 'echo 25-cs2620') > /usr/bin/cs61-docker-version; chmod ugo+rx,u+w,go-w /usr/bin/cs61-docker-version
+RUN (echo '#\!/bin/sh'; echo 'echo 26-cs2620') > /usr/bin/cs61-docker-version; chmod ugo+rx,u+w,go-w /usr/bin/cs61-docker-version
 
 # git build arguments
 ARG USER=CS61\ User
