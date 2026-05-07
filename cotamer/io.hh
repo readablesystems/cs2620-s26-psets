@@ -163,111 +163,105 @@ inline task<ioresult> write(fd f, const void* buf, size_t count) {
 }
 
 
-// Receive a message of up to count bytes. Suspends on EAGAIN. Returns bytes
+// Receive a message of up to `count` bytes. Suspends on EAGAIN. Returns bytes
 // read or error code.
 
-inline task<ioresult> recv_once(fd f, void* buf, size_t count) {
+inline task<ioresult> recv(fd f, void* buf, size_t count, int flags) {
     struct msghdr mh{};
     struct iovec iov[1];
     mh.msg_iov = iov;
     mh.msg_iovlen = 1;
     iov[0].iov_base = buf;
     iov[0].iov_len = count;
-    while (true) {
-        ssize_t r = ::recvmsg(f.fileno(), &mh, MSG_DONTWAIT);
-        if (r >= 0) {
-            co_return r;
-        } else if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-            co_await readable(f);
-        } else {
-            co_return std::unexpected(errno_code());
-        }
-    }
+    co_return co_await recvmsg(std::move(f), &mh, flags);
 }
 
 
-// Send a message with up to count bytes. Suspends on EAGAIN. Returns bytes
+// Send a message of up to `count` bytes. Suspends on EAGAIN. Returns bytes
 // written or error code.
 
-inline task<ioresult> send_once(fd f, const void* buf, size_t count) {
+inline task<ioresult> send(fd f, const void* buf, size_t count, int flags) {
     struct msghdr mh{};
     struct iovec iov[1];
     mh.msg_iov = iov;
     mh.msg_iovlen = 1;
     iov[0].iov_base = const_cast<void*>(buf);
     iov[0].iov_len = count;
-    while (true) {
-        ssize_t r = ::sendmsg(f.fileno(), &mh, MSG_DONTWAIT | MSG_NOSIGNAL);
-        if (r >= 0) {
-            co_return r;
-        } else if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-            co_await writable(f);
-        } else {
-            co_return std::unexpected(errno_code());
-        }
-    }
+    co_return co_await sendmsg(std::move(f), &mh, flags);
 }
 
 
-// Receive a message with up to n bytes, suspending as needed. Returns bytes
-// read or error code.
+// Send a message of `count` bytes, suspending as needed. Returns bytes written
+// or error code.
 
-inline task<ioresult> recv(fd f, void* buf, size_t count) {
-    char* p = static_cast<char*>(buf);
-    size_t nr = 0;
+inline task<ioresult> send_all(fd f, const void* buf, size_t count, int flags) {
+    return send(std::move(f), buf, count, flags | MSG_WAITALL);
+}
+
+
+// Send a message defined by `iov`, suspending as needed. Returns bytes written
+// or error code.
+
+inline task<ioresult> sendv_all(fd f, const iovec* iov, size_t iovcnt, int flags) {
     struct msghdr mh{};
-    struct iovec iov[1];
-    mh.msg_iov = iov;
-    mh.msg_iovlen = 1;
-    do {
-        iov[0].iov_base = p + nr;
-        iov[0].iov_len = count - nr;
-        ssize_t r = ::recvmsg(f.fileno(), &mh, MSG_DONTWAIT);
-        if (r > 0) {
-            nr += r;
-        } else if (r == 0) {
-            break;
-        } else if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-            co_await readable(f);
-        } else if (nr > 0) {
-            break;
-        } else {
-            co_return std::unexpected(errno_code());
-        }
-    } while (nr != count);
-    co_return nr;
+    mh.msg_iov = const_cast<iovec*>(iov);
+    mh.msg_iovlen = iovcnt;
+    co_return co_await sendmsg(std::move(f), &mh, flags | MSG_WAITALL);
 }
 
 
-// Write a message of n bytes, suspending as needed. Returns bytes written or
+// Receive a message of up to `count` bytes, capturing the sender's address
+// into `*addr`. On entry, `*addrlen` is the capacity of `addr`; on return, it
+// holds the actual address length. Suspends on EAGAIN. Returns bytes read or
 // error code.
 
-inline task<ioresult> send(fd f, const void* buf, size_t count) {
-    char* p = const_cast<char*>(static_cast<const char*>(buf));
-    size_t nw = 0;
+inline task<ioresult> recvfrom(fd f, void* buf, size_t count,
+                               sockaddr* addr, socklen_t* addrlen, int flags) {
     struct msghdr mh{};
     struct iovec iov[1];
+    iov[0].iov_base = buf;
+    iov[0].iov_len = count;
     mh.msg_iov = iov;
     mh.msg_iovlen = 1;
-    do {
-        iov[0].iov_base = p + nw;
-        iov[0].iov_len = count - nw;
-        ssize_t r = ::sendmsg(f.fileno(), &mh, MSG_DONTWAIT | MSG_NOSIGNAL);
-        if (r > 0) {
-            nw += r;
-        } else if (r == 0) {
-            // This result is only expected if the original `count` was 0.
-            // At other times, treat it like EOF on read.
-            break;
-        } else if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-            co_await writable(f);
-        } else if (nw > 0) {
-            break;
-        } else {
-            co_return std::unexpected(errno_code());
-        }
-    } while (nw != count);
-    co_return nw;
+    mh.msg_name = addr;
+    mh.msg_namelen = addrlen ? *addrlen : 0;
+    auto r = co_await recvmsg(std::move(f), &mh, flags);
+    if (addrlen) {
+        *addrlen = mh.msg_namelen;
+    }
+    co_return r;
+}
+
+
+// Send a single datagram of `count` bytes to `addr`. Suspends on EAGAIN.
+// Returns bytes written or error code.
+
+inline task<ioresult> sendto(fd f, const void* buf, size_t count,
+                             const sockaddr* addr, socklen_t addrlen, int flags) {
+    struct msghdr mh{};
+    struct iovec iov[1];
+    iov[0].iov_base = const_cast<void*>(buf);
+    iov[0].iov_len = count;
+    mh.msg_iov = iov;
+    mh.msg_iovlen = 1;
+    mh.msg_name = const_cast<sockaddr*>(addr);
+    mh.msg_namelen = addrlen;
+    co_return co_await sendmsg(std::move(f), &mh, flags);
+}
+
+
+// Deprecated (backward compatibility)
+
+inline task<ioresult> recv_once(fd f, void* buf, size_t count) {
+    return recv(std::move(f), buf, count);
+}
+
+inline task<ioresult> send_once(fd f, const void* buf, size_t count) {
+    return send(std::move(f), buf, count);
+}
+
+inline task<ioresult> sendv(fd f, const iovec* iov, size_t iovcnt) {
+    return sendv_all(std::move(f), iov, iovcnt);
 }
 
 
@@ -311,6 +305,9 @@ inline task<fd> accept(fd listen_fd) {
     }
 }
 
+
+// Accepts a connection from a TCP socket. In addition to `cotamer::accept`,
+// this function sets the TCP_NODELAY option.
 
 inline task<fd> tcp_accept(fd listen_fd) {
     auto f = co_await accept(listen_fd);

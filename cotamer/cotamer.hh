@@ -378,12 +378,19 @@ inline task<ioresult> read_once(fd f, void* buf, size_t count);
 inline task<ioresult> write_once(fd f, const void* buf, size_t count);
 inline task<ioresult> read(fd f, void* buf, size_t count);
 inline task<ioresult> write(fd f, const void* buf, size_t count);
-task<ioresult> writev(fd f, const struct iovec* iov, size_t iovcnt);
-inline task<ioresult> recv_once(fd f, void* buf, size_t count);
-inline task<ioresult> send_once(fd f, const void* buf, size_t count);
-inline task<ioresult> recv(fd f, void* buf, size_t count);
-inline task<ioresult> send(fd f, const void* buf, size_t count);
-task<ioresult> sendv(fd f, const struct iovec* iov, size_t iovcnt);
+task<ioresult> writev(fd f, const iovec* iov, size_t iovcnt);
+
+task<ioresult> recvmsg(fd f, msghdr* msg, int flags);
+task<ioresult> sendmsg(fd f, const msghdr* msg, int flags);
+inline task<ioresult> recv(fd f, void* buf, size_t count, int flags = 0);
+inline task<ioresult> send(fd f, const void* buf, size_t count, int flags = 0);
+inline task<ioresult> send_all(fd f, const void* buf, size_t count, int flags = 0);
+inline task<ioresult> sendv_all(fd f, const iovec* iov, size_t iovcnt, int flags = 0);
+inline task<ioresult> recvfrom(fd f, void* buf, size_t count, sockaddr* addr, socklen_t* addrlen, int flags = 0);
+inline task<ioresult> sendto(fd f, const void* buf, size_t count, const sockaddr* addr, socklen_t addrlen, int flags = 0);
+[[deprecated("Use cot::recv")]] inline task<ioresult> recv_once(fd f, void* buf, size_t count);
+[[deprecated("Use cot::send")]] inline task<ioresult> send_once(fd f, const void* buf, size_t count);
+[[deprecated("Use cot::sendv_all")]] inline task<ioresult> sendv(fd f, const iovec* iov, size_t iovcnt);
 
 inline task<> connect(fd f, const struct sockaddr* addr, socklen_t len);
 inline task<fd> accept(fd listen_fd);
@@ -391,6 +398,9 @@ inline task<fd> accept(fd listen_fd);
 task<fd> tcp_listen(std::string address, int backlog = 128);
 task<fd> tcp_connect(std::string address);
 inline task<fd> tcp_accept(fd listen_fd);
+
+task<fd> udp_listen(std::string address);
+task<fd> udp_connect(std::string address);
 
 
 // mutex, mutex_event, unique_lock, shared_lock
@@ -444,10 +454,12 @@ public:
     inline ~mutex() = default;
 
     [[nodiscard]] inline mutex_event<false> lock();
+    [[nodiscard]] inline mutex_event<false> lock(bool& notify);
     [[nodiscard]] inline bool try_lock();
     inline void unlock();
 
     [[nodiscard]] inline mutex_event<true> lock_shared();
+    [[nodiscard]] inline mutex_event<true> lock_shared(bool& notify);
     [[nodiscard]] inline bool try_lock_shared();
     inline void unlock_shared();
 
@@ -463,14 +475,14 @@ private:
     // protects waiters_, tracks information about lock
     std::atomic<latch_type> latch_ = 0;          // see mf_ constants
     // queue of events waiting for mutex; see `lock_impl`
-    std::deque<detail::event_handle> waiters_;
+    std::deque<std::pair<detail::event_handle, bool*>> waiters_;
 
     inline latch_type latch();
     inline void unlatch(latch_type);
     inline bool allow(bool shared, latch_type) const noexcept;
     inline bool waiter_shared(const detail::event_handle&) const noexcept;
     [[nodiscard]] inline latch_type notify_locked(latch_type);
-    void lock_impl(bool shared, detail::event_handle& ep);
+    void lock_impl(bool shared, detail::event_handle& ep, bool* notify);
     void unlock_impl(bool shared);
 };
 
@@ -493,7 +505,7 @@ public:
     unique_lock& operator=(const unique_lock&) = delete;
     inline ~unique_lock();
 
-    [[nodiscard]] inline task<> lock();
+    [[nodiscard]] inline mutex_event<false> lock();
     [[nodiscard]] inline bool try_lock();
     inline void unlock();
 
@@ -524,7 +536,7 @@ public:
     shared_lock& operator=(const shared_lock&) = delete;
     inline ~shared_lock();
 
-    [[nodiscard]] inline task<> lock();
+    [[nodiscard]] inline mutex_event<true> lock();
     [[nodiscard]] inline bool try_lock();
     inline void unlock();
 

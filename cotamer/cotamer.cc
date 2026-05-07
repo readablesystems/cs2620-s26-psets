@@ -281,13 +281,16 @@ inline bool mutex::allow(bool is_shared, latch_type l) const noexcept {
 inline auto mutex::notify_locked(latch_type l) -> latch_type {
     while (!waiters_.empty()) {
         auto& fw = waiters_.front();
-        if (!fw.empty()) {
-            bool fws = waiter_shared(fw);
+        if (!fw.first.empty()) {
+            bool fws = waiter_shared(fw.first);
             if (!allow(fws, l)) {
                 break;
             }
-            if (fw->trigger()) {
+            if (fw.first->trigger()) {
                 l += fws ? mf_lock_shared : mf_lock_excl;
+                if (fw.second) {
+                    *fw.second = true;
+                }
             }
         }
         waiters_.pop_front();
@@ -295,12 +298,15 @@ inline auto mutex::notify_locked(latch_type l) -> latch_type {
     return l;
 }
 
-void mutex::lock_impl(bool is_shared, detail::event_handle& e) {
+void mutex::lock_impl(bool is_shared, detail::event_handle& e, bool* notify) {
     latch_type l = latch();
     l = notify_locked(l);
     if (waiters_.empty() && allow(is_shared, l)) {
         if (e) {
             e->trigger();
+        }
+        if (notify) {
+            *notify = true;
         }
         l += is_shared ? mf_lock_shared : mf_lock_excl;
     } else {
@@ -310,7 +316,7 @@ void mutex::lock_impl(bool is_shared, detail::event_handle& e) {
         if (is_shared) {
             e->set_user_flags(detail::ef_user);
         }
-        waiters_.push_back(e);
+        waiters_.push_back({e, notify});
     }
     unlatch(l);
 }

@@ -135,6 +135,20 @@ add_library(CotamerExamples OBJECT
     utils.cc
 )
 
+if(COTAMER_HAVE_LLHTTP)
+    add_executable(httpd
+        httpd.cc
+        $<TARGET_OBJECTS:Cotamer>
+        $<TARGET_OBJECTS:CotamerHttp>
+    )
+    target_include_directories(httpd PRIVATE
+        ${LLHTTP_INCLUDE_DIR}
+    )
+    target_link_libraries(httpd PRIVATE
+        ${LLHTTP_LIBRARY}
+    )
+endif()
+
 if(COTAMER_HAVE_LLHTTP AND COTAMER_HAVE_NLOHMANN_JSON)
     add_executable(jsond
         jsond.cc
@@ -179,17 +193,21 @@ if(COTAMER_HAVE_LLHTTP AND COTAMER_HAVE_NLOHMANN_JSON)
     endif()
 endif()
 
-if(COTAMER_HAVE_LLHTTP)
-    add_executable(httpd
-        httpd.cc
+if(COTAMER_HAVE_NLOHMANN_JSON)
+    add_executable(udp-jsond
+        udp-jsond.cc
         $<TARGET_OBJECTS:Cotamer>
-        $<TARGET_OBJECTS:CotamerHttp>
     )
-    target_include_directories(httpd PRIVATE
-        ${LLHTTP_INCLUDE_DIR}
+    target_link_libraries(udp-jsond PRIVATE
+        nlohmann_json::nlohmann_json
     )
-    target_link_libraries(httpd PRIVATE
-        ${LLHTTP_LIBRARY}
+
+    add_executable(udp-jsond-client
+        udp-jsond-client.cc
+        $<TARGET_OBJECTS:Cotamer>
+    )
+    target_link_libraries(udp-jsond-client PRIVATE
+        nlohmann_json::nlohmann_json
     )
 endif()
 

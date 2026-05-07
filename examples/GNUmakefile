@@ -13,7 +13,9 @@ ifeq ($(V),1)
 cmake_verbose := --verbose
 endif
 
-targets = httpd jsond jsond-client jsond-curl-client
+targets = httpd \
+	jsond jsond-client jsond-curl-client \
+	udp-jsond udp-jsond-client
 
 all:
 	cmake -B $(BUILD) $(cmake_build)

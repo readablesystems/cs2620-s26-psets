@@ -2089,7 +2089,13 @@ inline detail::event_handle&& mutex_event<shared>::handle() && noexcept {
 
 inline mutex_event<false> mutex::lock() {
     mutex_event<false> me(this);
-    lock_impl(false, me.ep_);
+    lock_impl(false, me.ep_, nullptr);
+    return me;
+}
+
+inline mutex_event<false> mutex::lock(bool& notify) {
+    mutex_event<false> me(this);
+    lock_impl(false, me.ep_, &notify);
     return me;
 }
 
@@ -2110,7 +2116,13 @@ inline void mutex::unlock() {
 
 inline mutex_event<true> mutex::lock_shared() {
     mutex_event<true> me(this);
-    lock_impl(true, me.ep_);
+    lock_impl(true, me.ep_, nullptr);
+    return me;
+}
+
+inline mutex_event<true> mutex::lock_shared(bool& notify) {
+    mutex_event<true> me(this);
+    lock_impl(true, me.ep_, &notify);
     return me;
 }
 
@@ -2151,7 +2163,7 @@ inline auto mutex::latch() -> latch_type {
 
 inline void mutex::unlatch(latch_type l) {
     if (!waiters_.empty()) {
-        l += waiter_shared(waiters_.front()) ? mf_next_shared : mf_next_excl;
+        l += waiter_shared(waiters_.front().first) ? mf_next_shared : mf_next_excl;
     }
     latch_.store(l, std::memory_order_release);
 }
@@ -2199,14 +2211,13 @@ inline void unique_lock::swap(unique_lock& x) noexcept {
     }
 }
 
-inline task<> unique_lock::lock() {
+inline mutex_event<false> unique_lock::lock() {
     if (!m_) {
         throw std::system_error(std::make_error_code(std::errc::operation_not_permitted));
     } else if (owned_) {
         throw std::system_error(std::make_error_code(std::errc::resource_deadlock_would_occur));
     }
-    co_await m_->lock();
-    owned_ = true;
+    return m_->lock(owned_);
 }
 
 inline bool unique_lock::try_lock() {
@@ -2275,14 +2286,13 @@ inline void shared_lock::swap(shared_lock& x) noexcept {
     }
 }
 
-inline task<> shared_lock::lock() {
+inline mutex_event<true> shared_lock::lock() {
     if (!m_) {
         throw std::system_error(std::make_error_code(std::errc::operation_not_permitted));
     } else if (owned_) {
         throw std::system_error(std::make_error_code(std::errc::resource_deadlock_would_occur));
     }
-    co_await m_->lock_shared();
-    owned_ = true;
+    return m_->lock_shared(owned_);
 }
 
 inline bool shared_lock::try_lock() {

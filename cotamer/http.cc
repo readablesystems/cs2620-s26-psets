@@ -471,7 +471,7 @@ task<http_message> http_parser::receive(ticket_type ticket) {
         size_t nr;
         if (receive_buffer_.empty()) {
             buf = stackbuf;
-            auto nx = co_await recv_once(f_, stackbuf, sizeof(stackbuf));
+            auto nx = co_await recv(f_, stackbuf, sizeof(stackbuf));
             if (!nx || *nx == 0) {
                 break;
             }
@@ -544,7 +544,7 @@ task<http_parser::ticket_type> http_parser::send_request(http_message m) {
     unique_lock guard(co_await m_[1].lock());
     auto ticket = m_[0].lock();
 
-    co_await sendv(f_, iov, iovcnt);
+    co_await sendv_all(f_, iov, iovcnt);
     co_return std::move(ticket);
 }
 
@@ -591,7 +591,7 @@ task<> http_parser::send_response(http_message m) {
     }
 
     unique_lock guard(co_await m_[1].lock());
-    co_await sendv(f_, iov, iovcnt);
+    co_await sendv_all(f_, iov, iovcnt);
 }
 
 task<> http_parser::send(http_message m) {
@@ -610,12 +610,12 @@ task<> http_parser::send_response_chunk(std::string str) {
     iov[1] = iovec{ str.data(), str.length() };
     iov[2] = iovec{ (void*) "\r\n", 2 };
     unique_lock guard(co_await m_[1].lock());
-    co_await sendv(f_, iov, 3);
+    co_await sendv_all(f_, iov, 3);
 }
 
 task<> http_parser::send_response_end_chunk() {
     unique_lock guard(co_await m_[1].lock());
-    co_await cotamer::send(f_, "0\r\n\r\n", 5);
+    co_await send_all(f_, "0\r\n\r\n", 5);
 }
 
 #if COTAMER_HAVE_NLOHMANN_JSON
