@@ -2331,4 +2331,41 @@ inline detail::describe_task_awaiter describe(const std::string& description) {
     return detail::describe_task_awaiter{description};
 }
 
+
+// String helpers
+
+namespace strings {
+
+inline bool ieq(const char* a, const char* b, size_t count) noexcept {
+    for (; count != 0; ++a, ++b, --count) {
+        char ach = *a, bch = *b;
+        if (ach >= 'A' && ach <= 'Z') {
+            ach += 32; // make lower case
+        }
+        if (bch >= 'A' && bch <= 'Z') {
+            bch += 32;
+        }
+        if (ach != bch) {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline bool ieq(std::string_view a, std::string_view b) noexcept {
+    return a.size() == b.size() && ieq(a.data(), b.data(), a.size());
+}
+
+}
+
+
+// JSON helpers
+
+namespace detail {
+template <typename T>
+concept nlohmann_basic_json_type = requires {
+    typename T::template json_serializer<int>;
+};
+}
+
 }

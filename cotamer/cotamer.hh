@@ -384,13 +384,13 @@ task<ioresult> recvmsg(fd f, msghdr* msg, int flags);
 task<ioresult> sendmsg(fd f, const msghdr* msg, int flags);
 inline task<ioresult> recv(fd f, void* buf, size_t count, int flags = 0);
 inline task<ioresult> send(fd f, const void* buf, size_t count, int flags = 0);
+inline task<ioresult> sendv(fd f, const void* buf, size_t count, int flags = 0);
 inline task<ioresult> send_all(fd f, const void* buf, size_t count, int flags = 0);
 inline task<ioresult> sendv_all(fd f, const iovec* iov, size_t iovcnt, int flags = 0);
 inline task<ioresult> recvfrom(fd f, void* buf, size_t count, sockaddr* addr, socklen_t* addrlen, int flags = 0);
 inline task<ioresult> sendto(fd f, const void* buf, size_t count, const sockaddr* addr, socklen_t addrlen, int flags = 0);
 [[deprecated("Use cot::recv")]] inline task<ioresult> recv_once(fd f, void* buf, size_t count);
 [[deprecated("Use cot::send")]] inline task<ioresult> send_once(fd f, const void* buf, size_t count);
-[[deprecated("Use cot::sendv_all")]] inline task<ioresult> sendv(fd f, const iovec* iov, size_t iovcnt);
 
 inline task<> connect(fd f, const struct sockaddr* addr, socklen_t len);
 inline task<fd> accept(fd listen_fd);
@@ -554,7 +554,7 @@ private:
 
 
 
-// Error codes and exception type.
+// Error codes and exception type
 
 enum class cotamer_errc {
     cross_driver_await = 1,
@@ -572,7 +572,7 @@ private:
 };
 
 
-// Statistics.
+// Statistics
 
 #if COTAMER_STATS
 struct statistics {
@@ -589,7 +589,18 @@ extern statistics stats;
 inline detail::describe_task_awaiter describe(const std::string&);
 
 
-// Metaprogramming.
+// String helpers
+
+namespace strings {
+// Are the first `count` characters of `a` and `b` equal, ignoring ASCII case?
+inline bool ieq(const char* a, const char* b, size_t count) noexcept;
+
+// Are `a` and `b` equal, ignoring ASCII case?
+inline bool ieq(std::string_view a, std::string_view b) noexcept;
+}
+
+
+// Metaprogramming
 
 template <typename T> struct is_task : public std::false_type { };
 template <typename T> struct is_task<task<T>> : public std::true_type { };

@@ -81,13 +81,10 @@ struct status_code_map_comparator {
         return a.code < b;
     }
 };
-}
 
-namespace cotamer {
-
-static constexpr uint8_t us_safe = 1;  // all URL-safe characters except ?
-static constexpr uint8_t us_hex = 2;
-static const uint8_t urlsafe[256] = {
+constexpr uint8_t us_safe = 1;  // all URL-safe characters except ?
+constexpr uint8_t us_hex = 2;
+const uint8_t urlsafe[256] = {
     /* 0x00-0x0F */ 0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
     /* 0x10-0x1F */ 0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
     /* 0x20-0x2F */ 0, 1, 0, 0, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
@@ -100,34 +97,39 @@ static const uint8_t urlsafe[256] = {
                     1, 1, 1, 1, 1, 1, 1, 1,
     /* 0x70-0x7F */ 1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 0,
 };
+inline int xvalue(unsigned char ch) {
+    return urlsafe[ch] >> 4;
+}
 
-const llhttp_settings_t http_parser::settings = {
-    .on_message_begin       = &http_parser::on_message_begin,
-    .on_protocol            = nullptr,
-    .on_url                 = &http_parser::on_url,
-    .on_status              = &http_parser::on_status,
-    .on_method              = nullptr,
-    .on_version             = nullptr,
-    .on_header_field        = &http_parser::on_header_field,
-    .on_header_value        = &http_parser::on_header_value,
-    .on_chunk_extension_name = nullptr,
-    .on_chunk_extension_value = nullptr,
-    .on_headers_complete    = &http_parser::on_headers_complete,
-    .on_body                = &http_parser::on_body,
-    .on_message_complete    = &http_parser::on_message_complete,
-    .on_protocol_complete   = nullptr,
-    .on_url_complete        = nullptr,
-    .on_status_complete     = nullptr,
-    .on_method_complete     = nullptr,
-    .on_version_complete    = nullptr,
-    .on_header_field_complete = &http_parser::on_header_field_complete,
-    .on_header_value_complete = &http_parser::on_header_value_complete,
-    .on_chunk_extension_name_complete = nullptr,
-    .on_chunk_extension_value_complete = nullptr,
-    .on_chunk_header        = &http_parser::on_chunk_header,
-    .on_chunk_complete      = nullptr,
-    .on_reset               = nullptr
-};
+int parse_method_on_method_complete(llhttp_t*) {
+    return -1;
+}
+
+const llhttp_settings_t parse_method_settings = []{
+    llhttp_settings_t s{};
+    s.on_method_complete = parse_method_on_method_complete;
+    return s;
+}();
+
+}
+
+namespace cotamer {
+
+const llhttp_settings_t http_parser::settings = []{
+    llhttp_settings_t s{};
+    s.on_message_begin = &http_parser::on_message_begin;
+    s.on_url = &http_parser::on_url;
+    s.on_status = &http_parser::on_status;
+    s.on_header_field = &http_parser::on_header_field;
+    s.on_header_value = &http_parser::on_header_value;
+    s.on_headers_complete = &http_parser::on_headers_complete;
+    s.on_body = &http_parser::on_body;
+    s.on_message_complete = &http_parser::on_message_complete;
+    s.on_header_field_complete = &http_parser::on_header_field_complete;
+    s.on_header_value_complete = &http_parser::on_header_value_complete;
+    s.on_chunk_header = &http_parser::on_chunk_header;
+    return s;
+}();
 
 const char* http_message::default_status_message(unsigned code) {
     size_t ncodes = sizeof(default_status_codes) / sizeof(status_code_map);
@@ -141,20 +143,20 @@ const char* http_message::default_status_message(unsigned code) {
     return llhttp_status_name((llhttp_status_t) code);
 }
 
-http_message::header_iterator http_message::find_header(const char* name, size_t length) const {
+http_message::header_iterator http_message::find_header(std::string_view name) const {
     auto it = header_begin(), end = header_end();
-    while (it != end && !it.name_eq_case(name, length)) {
+    while (it != end && !it.name_eq_case(name)) {
         ++it;
     }
     return it;
 }
 
-std::string http_message::header(const char* name, size_t length) const {
+std::string http_message::header(std::string_view name) const {
     std::string result;
     bool any = false;
     auto it = header_begin(), end = header_end();
     while (it != end) {
-        if (it.name_eq_case(name, length)) {
+        if (it.name_eq_case(name)) {
             if (any) {
                 result += ", ";
                 result += it.value();
@@ -193,10 +195,6 @@ void http_message::add_header(std::string key, std::string value) {
     headers_ += value;
     headers_.append("\r\n", 2);
     hpairs_.emplace_back(name1, name2, name2 + 2, name2 + 2 + value.length());
-}
-
-inline int xvalue(unsigned char ch) {
-    return urlsafe[ch] >> 4;
 }
 
 void http_message::make_info(unsigned fl) const {
@@ -312,7 +310,7 @@ bool http_message::has_search_param(std::string_view name) const {
     const info_type& inf = info(info_params);
     auto it = inf.qpairs.begin(), end = inf.qpairs.end();
     while (it != end) {
-        if (it->name_eq(inf.qurl.data(), name)) {
+        if (it->name(inf.qurl.data()) == name) {
             return true;
         }
         ++it;
@@ -324,12 +322,28 @@ std::string_view http_message::search_param(std::string_view name) const {
     const info_type& inf = info(info_params);
     auto it = inf.qpairs.begin(), end = inf.qpairs.end();
     while (it != end) {
-        if (it->name_eq(inf.qurl.data(), name)) {
-            return std::string_view{inf.qurl.data() + it->value1, it->value2};
+        if (it->name(inf.qurl.data()) == name) {
+            return it->value(inf.qurl.data());
         }
         ++it;
     }
     return std::string_view{};
+}
+
+
+llhttp_method http_parser::parse_method(std::string_view s) {
+    llhttp_t hp;
+    llhttp_init(&hp, HTTP_REQUEST, &parse_method_settings);
+    llhttp_errno_t err = llhttp_execute(&hp, s.data(), s.size());
+    const char space[] = " ";
+    if (err == HPE_OK) {
+        err = llhttp_execute(&hp, space, 1);
+    }
+    if (err == HPE_CB_METHOD_COMPLETE
+        && (hp.error_pos == s.data() + s.size() || hp.error_pos == space)) {
+        return (llhttp_method) hp.method;
+    }
+    throw std::invalid_argument("unknown HTTP method");
 }
 
 
@@ -554,7 +568,7 @@ task<> http_parser::send_response(http_message m) {
     http_message::header_iterator connhdr;
     const char* data;
     if (should_keep_alive()
-        && (connhdr = m.find_header("connection", 10)) != m.header_end()
+        && (connhdr = m.find_header("connection")) != m.header_end()
         && (connhdr.value().length() == 5
             && (data = connhdr.value().data())
             && (data[0] == 'C' || data[0] == 'c')
@@ -617,16 +631,5 @@ task<> http_parser::send_response_end_chunk() {
     unique_lock guard(co_await m_[1].lock());
     co_await send_all(f_, "0\r\n\r\n", 5);
 }
-
-#if COTAMER_HAVE_NLOHMANN_JSON
-http_message& http_message::body(const nlohmann::json& j) {
-    if (!has_header("Content-Type")) {
-        add_header("Content-Type", "application/json");
-    }
-    body_ = j.dump();
-    has_body_ = 1;
-    return *this;
-}
-#endif
 
 } // namespace cotamer

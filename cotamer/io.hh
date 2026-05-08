@@ -191,6 +191,17 @@ inline task<ioresult> send(fd f, const void* buf, size_t count, int flags) {
 }
 
 
+// Send a message defined by `iov`. Suspends on EAGAIN. Returns bytes written
+// or error code.
+
+inline task<ioresult> sendv(fd f, const iovec* iov, size_t iovcnt, int flags) {
+    struct msghdr mh{};
+    mh.msg_iov = const_cast<iovec*>(iov);
+    mh.msg_iovlen = iovcnt;
+    co_return co_await sendmsg(std::move(f), &mh, flags);
+}
+
+
 // Send a message of `count` bytes, suspending as needed. Returns bytes written
 // or error code.
 
@@ -203,10 +214,7 @@ inline task<ioresult> send_all(fd f, const void* buf, size_t count, int flags) {
 // or error code.
 
 inline task<ioresult> sendv_all(fd f, const iovec* iov, size_t iovcnt, int flags) {
-    struct msghdr mh{};
-    mh.msg_iov = const_cast<iovec*>(iov);
-    mh.msg_iovlen = iovcnt;
-    co_return co_await sendmsg(std::move(f), &mh, flags | MSG_WAITALL);
+    return sendv(std::move(f), iov, iovcnt, flags | MSG_WAITALL);
 }
 
 
@@ -258,10 +266,6 @@ inline task<ioresult> recv_once(fd f, void* buf, size_t count) {
 
 inline task<ioresult> send_once(fd f, const void* buf, size_t count) {
     return send(std::move(f), buf, count);
-}
-
-inline task<ioresult> sendv(fd f, const iovec* iov, size_t iovcnt) {
-    return sendv_all(std::move(f), iov, iovcnt);
 }
 
 

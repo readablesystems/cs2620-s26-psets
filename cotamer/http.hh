@@ -7,48 +7,20 @@
 #include <memory>
 #include <cstring>
 #include <ctime>
-#if COTAMER_HAVE_NLOHMANN_JSON
-# include <nlohmann/json_fwd.hpp>
-#endif
 namespace cotamer {
 class http_parser;
 
-struct http_opair {
+struct http_kvoffsets {
     unsigned name1;
     unsigned name2;
     unsigned value1;
     unsigned value2;
 
-    inline bool name_eq(const char* base, const char* s, size_t len) const {
-        return name2 - name1 == len
-            && memcmp(base + name1, s, len) == 0;
+    constexpr std::string_view name(const char* base) const noexcept {
+        return {base + name1, name2 - name1};
     }
-    inline bool name_eq(const char* base, std::string_view str) const {
-        return name_eq(base, str.data(), str.length());
-    }
-    inline bool name_eq_case(const char* base, const char* s, size_t len) const {
-        return name2 - name1 == len
-            && case_eq_prefix(base + name1, s, len);
-    }
-    inline bool name_eq_case(const char* base, std::string_view str) const {
-        return name_eq_case(base, str.data(), str.length());
-    }
-    inline bool is_content_length(const char* base) const {
-        return name_eq_case(base, "content-length", 14);
-    }
-
-    static inline bool case_eq_prefix(const char* s1, const char* s2, size_t len) {
-        const char* e2 = s2 + len;
-        while (s2 != e2) {
-            unsigned char d = *s1 ^ *s2;
-            if (d != 0
-                && (d != 0x20 || (unsigned char) ((*s1 | 0x20) - 'a') >= 26)) {
-                return false;
-            }
-            ++s1;
-            ++s2;
-        }
-        return true;
+    constexpr std::string_view value(const char* base) const noexcept {
+        return {base + value1, value2 - value1};
     }
 };
 
@@ -67,7 +39,7 @@ public:
     using pointer = http_header_iterator_proxy;
 
     http_header_iterator() = default;
-    http_header_iterator(const char* base, const http_opair* pair)
+    http_header_iterator(const char* base, const http_kvoffsets* pair)
         : base_(base), pair_(pair) {
     }
     http_header_iterator(const http_header_iterator&) = default;
@@ -76,23 +48,17 @@ public:
     http_header_iterator& operator=(http_header_iterator&&) = default;
 
     constexpr std::string_view name() const noexcept {
-        return std::string_view{base_ + pair_->name1, base_ + pair_->name2};
+        return pair_->name(base_);
     }
-    bool name_eq(const char* s, size_t len) const noexcept {
-        return pair_->name_eq(base_, s, len);
+    constexpr bool name_eq(std::string_view str) const noexcept {
+        return pair_->name(base_) == str;
     }
-    bool name_eq(std::string_view str) const noexcept {
-        return pair_->name_eq(base_, str);
-    }
-    bool name_eq_case(const char* s, size_t len) const noexcept {
-        return pair_->name_eq_case(base_, s, len);
-    }
-    bool name_eq_case(std::string_view str) const noexcept {
-        return pair_->name_eq_case(base_, str);
+    constexpr bool name_eq_case(std::string_view str) const noexcept {
+        return strings::ieq(pair_->name(base_), str);
     }
 
     constexpr std::string_view value() const noexcept {
-        return std::string_view{base_ + pair_->value1, base_ + pair_->value2};
+        return pair_->value(base_);
     }
 
     value_type operator*() const noexcept { return {name(), value()}; }
@@ -117,15 +83,17 @@ public:
 
 private:
     const char* base_;
-    const http_opair* pair_;
+    const http_kvoffsets* pair_;
 };
 
 class http_message {
 public:
     typedef http_header_iterator header_iterator;
 
-    inline http_message(llhttp_method method = HTTP_GET,
-                        std::string url = std::string());
+    inline http_message();
+    inline http_message(llhttp_method method, std::string url = std::string());
+    inline http_message(std::string_view method, std::string url = std::string());
+    inline http_message(unsigned status_code);
     http_message(http_message&&) = default;
     http_message& operator=(http_message&&) = default;
     inline http_message(const http_message&);
@@ -145,15 +113,9 @@ public:
     inline const char* method_name() const;
 
     // Examine headers
-    inline bool has_header(const char* name) const;
-    inline bool has_header(const char* name, size_t name_length) const;
     inline bool has_header(std::string_view name) const;
-    inline header_iterator find_header(const char* name) const;
-    header_iterator find_header(const char* name, size_t name_length) const;
-    inline header_iterator find_header(std::string_view name) const;
-    inline std::string header(const char* name) const;
-    std::string header(const char* name, size_t name_length) const;
-    inline std::string header(std::string_view name) const;
+    header_iterator find_header(std::string_view name) const;
+    std::string header(std::string_view name) const;
     inline header_iterator header_begin() const;
     inline header_iterator header_end() const;
 
@@ -185,6 +147,8 @@ public:
     inline http_message& status_code(unsigned code);
     inline http_message& status_code(unsigned code, std::string message);
     inline http_message& method(llhttp_method method);
+    inline http_message& method(std::string_view method);
+    inline http_message& method_name(std::string_view method);
     inline http_message& url(std::string url);
     inline http_message& header(std::string key, std::string value);
     inline http_message& header(std::string key, size_t value);
@@ -192,11 +156,15 @@ public:
 
     inline http_message& body(std::string body);
     inline http_message& append_body(const std::string& x);
-#if COTAMER_HAVE_NLOHMANN_JSON
-    http_message& body(const nlohmann::json& j);
-#endif
+    template <detail::nlohmann_basic_json_type Json>
+    http_message& body(const Json& j);
 
     static const char* default_status_message(unsigned code);
+
+    // Deprecated accessors
+    [[deprecated]] inline bool has_header(const char* s, size_t count) const;
+    [[deprecated]] inline header_iterator find_header(const char* s, size_t count) const;
+    [[deprecated]] inline std::string header(const char* s, size_t count) const;
 
 private:
     enum {
@@ -207,7 +175,7 @@ private:
         unsigned flags = 0;
         std::pair<unsigned, unsigned> f[3];
         std::string qurl;
-        std::vector<http_opair> qpairs;
+        std::vector<http_kvoffsets> qpairs;
         inline info_type()
             : flags(0) {
         }
@@ -224,7 +192,7 @@ private:
     std::string url_;
     std::string status_message_;
     std::string headers_;
-    std::vector<http_opair> hpairs_;
+    std::vector<http_kvoffsets> hpairs_;
     std::string body_;
     mutable std::unique_ptr<info_type> info_;
 
@@ -276,6 +244,8 @@ public:
     // Release ownership of the underlying fd (e.g., for protocol upgrades)
     inline fd take_file();
 
+    static llhttp_method parse_method(std::string_view);
+
 private:
     static constexpr size_t bufsize = 8192;
 
@@ -312,9 +282,24 @@ private:
     inline void copy_parser_status(message_data& md);
 };
 
+inline http_message::http_message()
+    : major_(1), minor_(1), method_(HTTP_GET), error_(HPE_OK),
+      status_code_(200), upgrade_(0), has_body_(0) {
+}
+
 inline http_message::http_message(llhttp_method method, std::string url)
     : major_(1), minor_(1), method_(method), error_(HPE_OK),
       status_code_(200), upgrade_(0), has_body_(0), url_(std::move(url)) {
+}
+
+inline http_message::http_message(std::string_view method, std::string url)
+    : major_(1), minor_(1), method_(http_parser::parse_method(method)), error_(HPE_OK),
+      status_code_(200), upgrade_(0), has_body_(0), url_(std::move(url)) {
+}
+
+inline http_message::http_message(unsigned status_code)
+    : major_(1), minor_(1), method_(HTTP_GET), error_(HPE_OK),
+      status_code_(status_code), upgrade_(0), has_body_(0) {
 }
 
 inline http_message::http_message(const http_message& x)
@@ -400,31 +385,19 @@ inline constexpr const std::string& http_message::url() const {
 }
 
 inline bool http_message::has_header(const char* name, size_t length) const {
-    return find_header(name, length) != header_end();
-}
-
-inline bool http_message::has_header(const char* name) const {
-    return find_header(name) != header_end();
+    return find_header({name, length}) != header_end();
 }
 
 inline bool http_message::has_header(std::string_view name) const {
     return find_header(name) != header_end();
 }
 
-inline http_message::header_iterator http_message::find_header(const char* name) const {
-    return find_header(name, strlen(name));
+inline http_message::header_iterator http_message::find_header(const char* name, size_t length) const {
+    return find_header({name, length});
 }
 
-inline http_message::header_iterator http_message::find_header(std::string_view name) const {
-    return find_header(name.data(), name.length());
-}
-
-inline std::string http_message::header(const char* name) const {
-    return header(name, strlen(name));
-}
-
-inline std::string http_message::header(std::string_view name) const {
-    return header(name.data(), name.length());
+inline std::string http_message::header(const char* name, size_t length) const {
+    return header({name, length});
 }
 
 inline const std::string& http_message::body() const {
@@ -506,6 +479,16 @@ inline http_message& http_message::method(llhttp_method method) {
     return *this;
 }
 
+inline http_message& http_message::method(std::string_view method) {
+    method_ = (unsigned) http_parser::parse_method(method);
+    return *this;
+}
+
+inline http_message& http_message::method_name(std::string_view method) {
+    method_ = (unsigned) http_parser::parse_method(method);
+    return *this;
+}
+
 inline http_message& http_message::url(std::string url) {
     url_ = std::move(url);
     kill_info(info_url | info_params);
@@ -542,6 +525,16 @@ inline http_message& http_message::body(std::string body) {
 
 inline http_message& http_message::append_body(const std::string& x) {
     body_ += x;
+    has_body_ = 1;
+    return *this;
+}
+
+template <detail::nlohmann_basic_json_type Json>
+http_message& http_message::body(const Json& j) {
+    if (!has_header("Content-Type")) {
+        add_header("Content-Type", "application/json");
+    }
+    body_ = j.dump();
     has_body_ = 1;
     return *this;
 }

@@ -328,7 +328,7 @@ void mutex::unlock_impl(bool is_shared) {
 }
 
 
-// error functions
+// Error functions
 
 cotamer_error::cotamer_error(cotamer_errc ec)
     : std::logic_error(message(ec)), errc_(ec) {
