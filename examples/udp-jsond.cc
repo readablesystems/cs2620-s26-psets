@@ -21,7 +21,7 @@
      Companion client is in `udp-jsond-client.cc`.
 
      Usage:
-         ./udp-jsond -p PORT
+         ./udp-jsond [-p PORT | -l ADDR:PORT]
 */
 
 #include "cotamer/cotamer.hh"
@@ -31,6 +31,7 @@
 #include <map>
 #include <netdb.h>
 #include <unistd.h>
+#include "examples/utils.hh"
 
 namespace cot = cotamer;
 using json = nlohmann::ordered_json;
@@ -222,13 +223,12 @@ static json process_datagram(std::string_view payload, notes_db& db) {
 //   2. Decode/dispatch synchronously.
 //   3. sendto the reply back to the sender.
 // Send errors and parse errors are logged but don't kill the loop.
-cot::task<> serve(std::string address, notes_db& db) {
-    cotamer::fd sock = co_await cot::udp_listen(address);
-    std::vector<char> buf(max_datagram);
+cot::task<> serve(cot::fd sock, notes_db& db) {
+    char buf[max_datagram];
     while (true) {
         sockaddr_storage src{};
         socklen_t srclen = sizeof(src);
-        auto r = co_await cot::recvfrom(sock, buf.data(), buf.size(),
+        auto r = co_await cot::recvfrom(sock, buf, sizeof(buf),
                                         reinterpret_cast<sockaddr*>(&src),
                                         &srclen);
         if (!r) {
@@ -236,7 +236,7 @@ cot::task<> serve(std::string address, notes_db& db) {
             continue;
         }
 
-        std::string_view payload(buf.data(), *r);
+        std::string_view payload(buf, *r);
         json resp = process_datagram(payload, db);
         std::string out = resp.dump();
 
@@ -253,9 +253,20 @@ cot::task<> serve(std::string address, notes_db& db) {
     }
 }
 
+cot::task<> start(std::string address, notes_db& db) {
+    try {
+        for (auto& sock : co_await cot::udp_listen_all(address)) {
+            serve(std::move(sock), db).detach();
+        }
+    } catch (std::system_error err) {
+        std::print(std::cerr, "{}\n", err.what());
+        exit(1);
+    }
+}
+
 
 void usage() {
-    fprintf(stderr, "Usage: udp-jsond [-p PORT] [-V]\n");
+    fprintf(stderr, "Usage: udp-jsond [-p PORT | -l ADDR:PORT] [-V]\n");
 }
 
 } // namespace
@@ -263,14 +274,19 @@ void usage() {
 
 int main(int argc, char* argv[]) {
     int opt;
-    int port = 11113;
-    while ((opt = getopt(argc, argv, "hp:V")) != -1) {
+    std::string listen = "localhost:11113";
+    while ((opt = getopt(argc, argv, "hp:l:V")) != -1) {
         switch (opt) {
         case 'h':
             usage();
             exit(0);
-        case 'p':
-            port = strtol(optarg, 0, 0);
+        case 'p': {
+            auto port = from_str_chars<unsigned short>(optarg);
+            listen = std::format("localhost:{}", port);
+            break;
+        }
+        case 'l':
+            listen = optarg;
             break;
         case 'V':
             verbose = true;
@@ -288,6 +304,6 @@ int main(int argc, char* argv[]) {
 
     notes_db db;
     cot::set_clock(cot::clock::real_time);
-    cot::task<> t = serve(std::format("localhost:{}", port), db);
+    cot::task<> t = start(std::move(listen), db);
     cot::loop();
 }

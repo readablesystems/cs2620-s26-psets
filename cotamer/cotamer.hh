@@ -15,6 +15,7 @@
 #include <vector>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include "cotamer/small_vector.hh"
 #include "cotamer/timer_heap.hh"
 
 // cotamer/cotamer.hh
@@ -395,10 +396,13 @@ inline task<ioresult> sendto(fd f, const void* buf, size_t count, const sockaddr
 inline task<> connect(fd f, const struct sockaddr* addr, socklen_t len);
 inline task<fd> accept(fd listen_fd);
 
+using fd_list = small_vector<fd, 3>;
+task<fd_list> tcp_listen_all(std::string address, int backlog = 128, size_t max = 0);
 task<fd> tcp_listen(std::string address, int backlog = 128);
 task<fd> tcp_connect(std::string address);
 inline task<fd> tcp_accept(fd listen_fd);
 
+task<fd_list> udp_listen_all(std::string address, size_t max = 0);
 task<fd> udp_listen(std::string address);
 task<fd> udp_connect(std::string address);
 
@@ -597,6 +601,9 @@ inline bool ieq(const char* a, const char* b, size_t count) noexcept;
 
 // Are `a` and `b` equal, ignoring ASCII case?
 inline bool ieq(std::string_view a, std::string_view b) noexcept;
+
+// Trim horizontal whitespace (SP/TAB) from `s`
+inline std::string_view trim_hws(std::string_view s) noexcept;
 }
 
 

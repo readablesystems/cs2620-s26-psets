@@ -1,5 +1,4 @@
 #pragma once
-#include "cotamer/small_vector.hh"
 #include <unistd.h>
 #include <system_error>
 #if defined(__x86_64__)
@@ -2354,6 +2353,16 @@ inline bool ieq(const char* a, const char* b, size_t count) noexcept {
 
 inline bool ieq(std::string_view a, std::string_view b) noexcept {
     return a.size() == b.size() && ieq(a.data(), b.data(), a.size());
+}
+
+inline std::string_view trim_hws(std::string_view s) noexcept {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) {
+        s.remove_prefix(1);
+    }
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) {
+        s.remove_suffix(1);
+    }
+    return s;
 }
 
 }

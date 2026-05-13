@@ -53,7 +53,7 @@ public:
     constexpr bool name_eq(std::string_view str) const noexcept {
         return pair_->name(base_) == str;
     }
-    constexpr bool name_eq_case(std::string_view str) const noexcept {
+    constexpr bool name_ieq(std::string_view str) const noexcept {
         return strings::ieq(pair_->name(base_), str);
     }
 
@@ -113,8 +113,7 @@ public:
     inline const char* method_name() const;
 
     // Examine headers
-    inline bool has_header(std::string_view name) const;
-    header_iterator find_header(std::string_view name) const;
+    bool has_header(std::string_view name) const;
     std::string header(std::string_view name) const;
     inline header_iterator header_begin() const;
     inline header_iterator header_end() const;
@@ -137,9 +136,12 @@ public:
     inline const std::string& body() const;
 
     // Modify message
+    // Message modifications invalidate all iterators (find_header(),
+    // header_begin()/end(), search_param_begin()/end()) and returned
+    // string_views (header(), path(), search(), hash(), search_param()).
     inline http_message& clear();
-    void add_header(std::string key, std::string value);
-    inline void add_header(std::string key, size_t value);
+    void add_header(std::string_view key, std::string_view value);
+    inline void add_header(std::string_view key, size_t value);
 
     inline http_message& http_major(unsigned v);
     inline http_message& http_minor(unsigned v);
@@ -150,19 +152,20 @@ public:
     inline http_message& method(std::string_view method);
     inline http_message& method_name(std::string_view method);
     inline http_message& url(std::string url);
-    inline http_message& header(std::string key, std::string value);
-    inline http_message& header(std::string key, size_t value);
-    inline http_message& date_header(std::string key, time_t value);
+    inline http_message& header(std::string_view key, std::string_view value);
+    inline http_message& header(std::string_view key, size_t value);
+    inline http_message& date_header(std::string_view key, time_t value);
 
     inline http_message& body(std::string body);
-    inline http_message& append_body(const std::string& x);
+    inline http_message& append_body(std::string_view str);
     template <detail::nlohmann_basic_json_type Json>
     http_message& body(const Json& j);
 
-    static const char* default_status_message(unsigned code);
+    static std::string_view default_status_message(unsigned code);
 
     // Deprecated accessors
     [[deprecated]] inline bool has_header(const char* s, size_t count) const;
+    [[deprecated]] header_iterator find_header(std::string_view name) const;
     [[deprecated]] inline header_iterator find_header(const char* s, size_t count) const;
     [[deprecated]] inline std::string header(const char* s, size_t count) const;
 
@@ -385,15 +388,7 @@ inline constexpr const std::string& http_message::url() const {
 }
 
 inline bool http_message::has_header(const char* name, size_t length) const {
-    return find_header({name, length}) != header_end();
-}
-
-inline bool http_message::has_header(std::string_view name) const {
-    return find_header(name) != header_end();
-}
-
-inline http_message::header_iterator http_message::find_header(const char* name, size_t length) const {
-    return find_header({name, length});
+    return has_header({name, length});
 }
 
 inline std::string http_message::header(const char* name, size_t length) const {
@@ -495,25 +490,25 @@ inline http_message& http_message::url(std::string url) {
     return *this;
 }
 
-inline void http_message::add_header(std::string key, size_t value) {
-    add_header(std::move(key), std::to_string(value));
+inline void http_message::add_header(std::string_view key, size_t value) {
+    add_header(key, std::to_string(value));
 }
 
-inline http_message& http_message::header(std::string key, std::string value) {
-    add_header(std::move(key), std::move(value));
+inline http_message& http_message::header(std::string_view key, std::string_view value) {
+    add_header(key, value);
     return *this;
 }
 
-inline http_message& http_message::header(std::string key, size_t value) {
-    add_header(std::move(key), value);
+inline http_message& http_message::header(std::string_view key, size_t value) {
+    add_header(key, value);
     return *this;
 }
 
-inline http_message& http_message::date_header(std::string key, time_t value) {
+inline http_message& http_message::date_header(std::string_view key, time_t value) {
     char buf[128];
     // XXX current locale
-    strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", gmtime(&value));
-    add_header(std::move(key), std::string(buf));
+    size_t n = strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", gmtime(&value));
+    add_header(key, {buf, n});
     return *this;
 }
 
@@ -523,8 +518,8 @@ inline http_message& http_message::body(std::string body) {
     return *this;
 }
 
-inline http_message& http_message::append_body(const std::string& x) {
-    body_ += x;
+inline http_message& http_message::append_body(std::string_view str) {
+    body_ += str;
     has_body_ = 1;
     return *this;
 }

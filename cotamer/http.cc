@@ -6,7 +6,7 @@
 namespace {
 struct status_code_map {
     unsigned code;
-    const char* message;
+    std::string_view message;
 } default_status_codes[] = {
     {100, "Continue"},
     {101, "Switching Protocols"},
@@ -82,23 +82,36 @@ struct status_code_map_comparator {
     }
 };
 
-constexpr uint8_t us_safe = 1;  // all URL-safe characters except ?
-constexpr uint8_t us_hex = 2;
-const uint8_t urlsafe[256] = {
-    /* 0x00-0x0F */ 0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
-    /* 0x10-0x1F */ 0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
-    /* 0x20-0x2F */ 0, 1, 0, 0, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
-    /* 0x30-0x3F */ 0x03, 0x13, 0x23, 0x33, 0x43, 0x53, 0x63, 0x73,
-                    0x83, 0x93, 1, 1, 0, 1, 0, 0,
-    /* 0x40-0x4F */ 1, 0xA3, 0xB3, 0xC3, 0xD3, 0xE3, 0xF3, 1,
-                    1, 1, 1, 1, 1, 1, 1, 1,
-    /* 0x50-0x5F */ 1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1,
-    /* 0x60-0x6F */ 1, 0xA3, 0xB3, 0xC3, 0xD3, 0xE3, 0xF3, 1,
-                    1, 1, 1, 1, 1, 1, 1, 1,
-    /* 0x70-0x7F */ 1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 0,
+constexpr uint8_t us_safe = 1;         // all URL-safe characters except ?
+constexpr uint8_t us_http_tchar = 2;   // characters matching HTTP `token`
+constexpr uint8_t us_hex = 4;          // hex digits (hex value in upper 4 bits)
+
+struct charinfo {
+    uint8_t v[256];
 };
+const charinfo chartable = []{
+    charinfo ct{};
+    for (unsigned char ch = '0'; ch <= '9'; ++ch) {
+        ct.v[ch] = us_safe | us_http_tchar | us_hex | ((ch - '0') << 4);
+    }
+    for (unsigned char ch = 'A'; ch <= 'F'; ++ch) {
+        ct.v[ch] = ct.v[ch + 32] = us_safe | us_http_tchar | us_hex | ((ch - 'A' + 10) << 4);
+    }
+    for (unsigned char ch = 'G'; ch <= 'Z'; ++ch) {
+        ct.v[ch] = ct.v[ch + 32] = us_safe | us_http_tchar;
+    }
+    for (auto s = "!#$%&'*+-.^_`|~"; *s; ++s) {
+        ct.v[(unsigned char) *s] |= us_http_tchar;
+    }
+    for (auto s = "!$%&'()*+,-./:;=@[\\]^_`{|}~"; *s; ++s) {
+        ct.v[(unsigned char) *s] |= us_safe;
+    }
+    return ct;
+}();
+
+
 inline int xvalue(unsigned char ch) {
-    return urlsafe[ch] >> 4;
+    return chartable.v[ch] >> 4;
 }
 
 int parse_method_on_method_complete(llhttp_t*) {
@@ -131,7 +144,10 @@ const llhttp_settings_t http_parser::settings = []{
     return s;
 }();
 
-const char* http_message::default_status_message(unsigned code) {
+std::string_view http_message::default_status_message(unsigned code) {
+    if (code == 200) { // common case
+        return "OK";
+    }
     size_t ncodes = sizeof(default_status_codes) / sizeof(status_code_map);
     status_code_map* m = std::lower_bound(default_status_codes,
                                           default_status_codes + ncodes,
@@ -143,9 +159,21 @@ const char* http_message::default_status_message(unsigned code) {
     return llhttp_status_name((llhttp_status_t) code);
 }
 
+
+bool http_message::has_header(std::string_view name) const {
+    auto it = header_begin(), last = header_end();
+    while (it != last) {
+        if (it.name_ieq(name)) {
+            return true;
+        }
+        ++it;
+    }
+    return false;
+}
+
 http_message::header_iterator http_message::find_header(std::string_view name) const {
-    auto it = header_begin(), end = header_end();
-    while (it != end && !it.name_eq_case(name)) {
+    auto it = header_begin(), last = header_end();
+    while (it != last && !it.name_ieq(name)) {
         ++it;
     }
     return it;
@@ -154,9 +182,9 @@ http_message::header_iterator http_message::find_header(std::string_view name) c
 std::string http_message::header(std::string_view name) const {
     std::string result;
     bool any = false;
-    auto it = header_begin(), end = header_end();
-    while (it != end) {
-        if (it.name_eq_case(name)) {
+    auto it = header_begin(), last = header_end();
+    while (it != last) {
+        if (it.name_ieq(name)) {
             if (any) {
                 result += ", ";
                 result += it.value();
@@ -185,16 +213,16 @@ void http_message::do_clear() {
     }
 }
 
-void http_message::add_header(std::string key, std::string value) {
+void http_message::add_header(std::string_view key, std::string_view value) {
     if (headers_.empty()) {
         headers_.reserve(2048);
     }
     size_t name1 = headers_.length(), name2 = name1 + key.length();
     headers_ += key;
     headers_.append(": ", 2);
-    headers_ += value;
+    headers_ += strings::trim_hws(value);
     headers_.append("\r\n", 2);
-    hpairs_.emplace_back(name1, name2, name2 + 2, name2 + 2 + value.length());
+    hpairs_.emplace_back(name1, name2, name2 + 2, headers_.length() - 2);
 }
 
 void http_message::make_info(unsigned fl) const {
@@ -212,7 +240,7 @@ void http_message::make_info(unsigned fl) const {
             goto fail;
         }
         while (s != s2) {
-            if (urlsafe[*s] & us_safe) {
+            if (chartable.v[*s] & us_safe) {
                 ++s;
             } else if (*s == '?') {
                 if (fpos == 0) {
@@ -278,8 +306,8 @@ void http_message::make_info(unsigned fl) const {
                 }
                 if (*s == '%'
                     && s2 - s >= 2
-                    && (urlsafe[(unsigned char) s[1]] & us_hex)
-                    && (urlsafe[(unsigned char) s[2]] & us_hex)) {
+                    && (chartable.v[(unsigned char) s[1]] & us_hex)
+                    && (chartable.v[(unsigned char) s[2]] & us_hex)) {
                     inf.qurl.append(last, s);
                     inf.qurl.push_back(xvalue(s[1]) * 16 + xvalue(s[2]));
                     last = s = s + 3;
@@ -435,7 +463,13 @@ int http_parser::on_header_value(::llhttp_t* hp, const char* s, size_t len) {
 int http_parser::on_header_value_complete(::llhttp_t* hp) {
     message_data* md = get_message_data(hp);
     if (md->state == state_header_value) {
-        md->hm.hpairs_.emplace_back(md->name1, md->name2, md->value1, md->hm.headers_.length());
+        // strip trailing OWS (llhttp stripped leading OWS)
+        const char* s = md->hm.headers_.data();
+        size_t v2 = md->hm.headers_.length();
+        while (v2 > md->value1 && (s[v2 - 1] == ' ' || s[v2 - 1] == '\t')) {
+            --v2;
+        }
+        md->hm.hpairs_.emplace_back(md->name1, md->name2, md->value1, v2);
     }
     md->hm.headers_.append("\r\n", 2);
     md->state = state_unknown;
@@ -565,26 +599,19 @@ task<http_parser::ticket_type> http_parser::send_request(http_message m) {
 task<> http_parser::send_response(http_message m) {
     // If the response is marked `Connection: close`, then ensure
     // should_keep_alive() returns 0
-    http_message::header_iterator connhdr;
-    const char* data;
-    if (should_keep_alive()
-        && (connhdr = m.find_header("connection")) != m.header_end()
-        && (connhdr.value().length() == 5
-            && (data = connhdr.value().data())
-            && (data[0] == 'C' || data[0] == 'c')
-            && (data[1] == 'L' || data[1] == 'l')
-            && (data[2] == 'O' || data[2] == 'o')
-            && (data[3] == 'S' || data[3] == 's')
-            && (data[4] == 'E' || data[4] == 'e'))) {
-        if (hp_.http_major > 0 && hp_.http_minor > 0) {
-            hp_.flags |= F_CONNECTION_CLOSE;
-        } else {
-            hp_.flags &= ~F_CONNECTION_KEEP_ALIVE;
+    if (should_keep_alive()) {
+        std::string connhdr = m.header("connection");
+        if (strings::ieq(connhdr, "close")) {
+            if (hp_.http_major > 0 && hp_.http_minor > 0) {
+                hp_.flags |= F_CONNECTION_CLOSE;
+            } else {
+                hp_.flags &= ~F_CONNECTION_KEEP_ALIVE;
+            }
         }
     }
 
     std::string_view status_message = m.status_message_.empty()
-        ? std::string_view(m.default_status_message(m.status_code()))
+        ? m.default_status_message(m.status_code())
         : std::string_view(m.status_message());
     std::string codeline = std::format("HTTP/{}.{} {} {}\r\n",
         m.http_major(), m.http_minor(), m.status_code(), status_message);

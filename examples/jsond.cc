@@ -28,7 +28,7 @@
        curl -s localhost:11112/stats
 
      Usage:
-         ./jsond -p PORT
+         ./jsond [-p PORT | -l ADDR:PORT]
 */
 
 #include "cotamer/cotamer.hh"
@@ -37,6 +37,7 @@
 #include <charconv>
 #include <map>
 #include <unistd.h>
+#include "examples/utils.hh"
 
 namespace cot = cotamer;
 using json = nlohmann::json;
@@ -278,31 +279,48 @@ cot::task<> handle_connection(cot::fd cfd, notes_db& db) {
     co_await sends;
 }
 
-// Listen on `address`; for each accepted connection, spawn a per-connection
-// coroutine via `run_one(...).detach()`.
-cot::task<> start(std::string address, notes_db& db) {
-    auto lfd = co_await cot::tcp_listen(address);
+// For each accepted connection, spawn a per-connection coroutine via
+// `run_one(...).detach()`.
+cot::task<> run_listen(cot::fd lfd, notes_db& db) {
     while (true) {
         handle_connection(co_await cot::tcp_accept(lfd), db).detach();
     }
 }
 
+// Listen on all file descriptors indicated by `address`. (This might be more
+// than one.)
+cot::task<> start(std::string address, notes_db& db) {
+    try {
+        for (auto& lfd : co_await cot::tcp_listen_all(address)) {
+            run_listen(std::move(lfd), db).detach();
+        }
+    } catch (std::system_error err) {
+        std::print(std::cerr, "{}\n", err.what());
+        exit(1);
+    }
+}
+
 void usage() {
-    fprintf(stderr, "Usage: jsond [-p PORT] [-V]\n");
+    fprintf(stderr, "Usage: jsond [-p PORT | -l ADDR:PORT] [-V]\n");
 }
 
 } // namespace
 
 int main(int argc, char* argv[]) {
     int opt;
-    int port = 11112;
-    while ((opt = getopt(argc, argv, "hp:V")) != -1) {
+    std::string listen = "localhost:11112";
+    while ((opt = getopt(argc, argv, "hp:l:V")) != -1) {
         switch (opt) {
         case 'h':
             usage();
             exit(0);
-        case 'p':
-            port = strtol(optarg, 0, 0);
+        case 'p': {
+            auto port = from_str_chars<unsigned short>(optarg);
+            listen = std::format("localhost:{}", port);
+            break;
+        }
+        case 'l':
+            listen = optarg;
             break;
         case 'V':
             verbose = true;
@@ -321,6 +339,6 @@ int main(int argc, char* argv[]) {
     notes_db db;
     cot::set_clock(cot::clock::real_time);
     // Keep the start task alive until cot::loop() exits.
-    cot::task<> t = start(std::format("localhost:{}", port), db);
+    cot::task<> t = start(std::move(listen), db);
     cot::loop();
 }
